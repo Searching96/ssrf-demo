@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -76,8 +77,12 @@ func main() {
 			</body>
 		`)
 	})
-	http.HandleFunc("/proxy", fetchProfilePicture)
 
-	fmt.Println("Dual-SSRF Simulator running on http://localhost:8080")
-	http.ListenAndServe(":8080", nil)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Default for local testing
+	}
+
+	fmt.Printf("Server running on port %s\n", port)
+	http.ListenAndServe(":"+port, nil)
 }
