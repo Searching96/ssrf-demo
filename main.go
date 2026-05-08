@@ -33,7 +33,20 @@ func main() {
 	// 2. The Vulnerable Proxy Route
 	http.HandleFunc("/api/v1/import-avatar", fetchProfilePicture)
 
-	// 3. A Simple Visual Frontend for your Presentation
+	// Add this to your main() to simulate AWS locally
+	http.HandleFunc("/latest/meta-data/iam/security-credentials/AppRole", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"Code": "Success",
+			"LastUpdated": "2026-05-08T12:00:00Z",
+			"Type": "AWS-HMAC",
+			"AccessKeyId": "AKIA_FAKE_FOR_DEMO_123",
+			"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			"Token": "IQoJb3JpZ2luX2VjE..."
+		}`)
+	})
+
+	// 3. A Simple Visual Frontend
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, `
