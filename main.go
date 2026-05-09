@@ -1,18 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 )
 
+// --- VULNERABLE HANDLER ---
 func fetchProfilePicture(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.Query().Get("url")
 
 	resp, err := http.Get(targetURL)
 	if err != nil {
-		// If it fails, print the EXACT system error to the screen
 		http.Error(w, "Proxy Failed. System Error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -22,14 +25,90 @@ func fetchProfilePicture(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+// --- SECURE HANDLER: NETWORK DENYLISTING ---
+func fetchProfilePictureFixed(w http.ResponseWriter, r *http.Request) {
+	targetURL := r.URL.Query().Get("url")
+
+	// 1. Parse the URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		http.Error(w, "Error: Invalid URL format.", http.StatusBadRequest)
+		return
+	}
+
+	// 2. Resolve the Domain to an IP Address (Time of Check)
+	hostname := parsedURL.Hostname()
+	ips, err := net.LookupIP(hostname)
+	if err != nil || len(ips) == 0 {
+		http.Error(w, "Error: Could not resolve hostname.", http.StatusBadRequest)
+		return
+	}
+
+	// We take the first resolved IP for our check and our connection
+	resolvedIP := ips[0]
+
+	// 3. The Denylist Check
+	if resolvedIP.IsLoopback() || resolvedIP.IsPrivate() || resolvedIP.IsLinkLocalUnicast() || resolvedIP.IsUnspecified() {
+		errorMessage := fmt.Sprintf("SSRF Blocked: The IP address (%s) belongs to a restricted internal network.", resolvedIP.String())
+		http.Error(w, errorMessage, http.StatusForbidden)
+		return
+	}
+
+	// 4. FORBID DNS REBINDING: Create a custom HTTP Transport
+	// We force the network dialer to use the exact IP we just validated,
+	// completely ignoring any subsequent DNS lookups. (Time of Use)
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Extract the port from the original request URL
+			port := parsedURL.Port()
+			if port == "" {
+				if parsedURL.Scheme == "https" {
+					port = "443"
+				} else {
+					port = "80"
+				}
+			}
+
+			// Construct the forced address using our validated IP
+			safeAddr := net.JoinHostPort(resolvedIP.String(), port)
+
+			// Dial using the safe IP directly
+			dialer := &net.Dialer{}
+			return dialer.DialContext(ctx, network, safeAddr)
+		},
+	}
+
+	// 5. Create a custom HTTP client using our hardened transport
+	client := &http.Client{
+		Transport: transport,
+	}
+
+	// 6. Execute the request safely
+	req, err := http.NewRequestWithContext(r.Context(), "GET", targetURL, nil)
+	if err != nil {
+		http.Error(w, "Error building request.", http.StatusInternalServerError)
+		return
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "Proxy Failed.", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	io.Copy(w, resp.Body)
+}
+
 func main() {
-	// Dynamically grab the port Render is using
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	// 1. Internal Metrics Mock (Verbose)
+	// Mock Endpoints for the Demo
+	// 1. Internal Metrics Mock
 	http.HandleFunc("/internal/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{
@@ -64,7 +143,6 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 
 		// Note: Using "ASIA" instead of "AKIA" because AWS temporary STS tokens always start with ASIA.
-		// This detail shows you really know your cloud security!
 		fmt.Fprint(w, `{
 			"Code": "Success",
 			"LastUpdated": "2026-05-09T02:35:14Z",
@@ -76,7 +154,7 @@ func main() {
 		}`)
 	})
 
-	// 3. Mock private S3 bucket
+	// 3. Private S3 Bucket Mock
 	http.HandleFunc("/s3/customer-backups-2026/social_security_numbers.csv", func(w http.ResponseWriter, r *http.Request) {
 		// We check for the specific stolen keys in the Authorization header
 		authHeader := r.Header.Get("Authorization")
@@ -94,54 +172,52 @@ func main() {
 		fmt.Fprint(w, "Name,SSN,AccountBalance\nAlice,000-11-2222,$5000000\nBob,999-88-7777,$150\nCharlie,888-55-4444,$250000")
 	})
 
-	// 4. Frontend with DYNAMIC Ports and UI Updates
+	// Frontend UI
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-
-		// We inject the actual running port directly into the HTML so it never fails
 		html := fmt.Sprintf(`
 			<!DOCTYPE html>
 			<html>
-			<head>
-				<title>Avatar Importer</title>
-			</head>
+			<head><title>Avatar Importer</title></head>
 			<body style="font-family:sans-serif; padding:2rem;">
 				<h2>Corporate Avatar Importer</h2>
 				
-				<form action="/proxy" method="GET" style="max-width: 400px;">
-					<label style="display:block; margin-bottom:5px; font-weight:bold;">Import Profile Image URL:</label>
-					
-					<input type="text" name="url" value="https://i.pinimg.com/1200x/d6/c4/ce/d6c4ce17fe18176c7d433021079fe1aa.jpg" 
-					       style="width: 100%%; padding: 10px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
-					       
-					<button type="submit" 
-					        style="width: 100%%; padding: 10px; cursor: pointer; box-sizing: border-box; background: #007BFF; color: white; border: none; border-radius: 4px; font-weight: bold;">
-					        Fetch
-					</button>
-				</form>
+				<!-- VULNERABLE FORM -->
+				<div style="background: #f8d7da; padding: 15px; border: 1px solid #f5c6cb; border-radius: 5px; max-width: 400px; margin-bottom: 20px;">
+					<h3 style="color: #721c24; margin-top: 0;">Vulnerable Importer (v1.0)</h3>
+					<form action="/api/v1/avatar/import" method="GET">
+						<input type="text" name="url" value="https://i.pinimg.com/1200x/d6/c4/ce/d6c4ce17fe18176c7d433021079fe1aa.jpg" style="width: 100%%; padding: 10px; margin-bottom: 10px; box-sizing: border-box;">
+						<button type="submit" style="width: 100%%; padding: 10px; cursor: pointer; background: #dc3545; color: white; border: none; font-weight: bold; border-radius: 4px;">Exploit Fetch</button>
+					</form>
+				</div>
+
+				<!-- SECURE FORM -->
+				<div style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; border-radius: 5px; max-width: 400px;">
+					<h3 style="color: #155724; margin-top: 0;">Secure Importer (v2.0)</h3>
+					<form action="/api/v2/avatar/import" method="GET">
+						<input type="text" name="url" value="https://i.pinimg.com/1200x/d6/c4/ce/d6c4ce17fe18176c7d433021079fe1aa.jpg" style="width: 100%%; padding: 10px; margin-bottom: 10px; box-sizing: border-box;">
+						<button type="submit" style="width: 100%%; padding: 10px; cursor: pointer; background: #28a745; color: white; border: none; font-weight: bold; border-radius: 4px;">Secure Fetch</button>
+					</form>
+				</div>
 				
-				<hr style="margin: 30px 0;">
+				<hr style="margin: 30px 0; max-width: 800px;">
 				
-				<div style="background: #f8d7da; padding: 15px; border-radius: 5px; border: 1px solid #f5c6cb; max-width: 800px;">
-					<h3 style="color: #721c24; margin-top: 0;">Presentation Demo Links (Click to Exploit)</h3>
-					
-					<p><b>Stage 1:</b><br>
-					<a href="/proxy?url=https://i.pinimg.com/1200x/d6/c4/ce/d6c4ce17fe18176c7d433021079fe1aa.jpg">Fetch External Image</a></p>
-					
-					<p><b>Stage 2 (Internal Leak):</b><br>
-					<a href="/proxy?url=http://127.0.0.1:%s/internal/metrics">Steal Internal DB Passwords</a></p>
-					
-					<p><b>Stage 3 (Cloud Breach):</b><br>
-					<a href="/proxy?url=http://127.0.0.1:%s/latest/meta-data/iam/security-credentials/WAF-Admin-Role">Steal AWS Metadata Keys</a></p>
+				<div style="background: #e2e3e5; padding: 15px; border-radius: 5px; max-width: 800px;">
+					<h3 style="margin-top: 0;">Presentation Exploit Links</h3>
+					<p><a href="/api/v1/avatar/import?url=http://127.0.0.1:%s/internal/metrics">1. Attack Internal Network (Vulnerable)</a></p>
+					<p><a href="/api/v2/avatar/import?url=http://127.0.0.1:%s/internal/metrics">2. Attack Internal Network (Secure)</a></p>
+					<p><a href="/api/v1/avatar/import?url=http://127.0.0.1:%s/latest/meta-data/iam/security-credentials/WAF-Admin-Role">3. Attack Cloud Metadata (Vulnerable)</a></p>
+					<p><a href="/api/v2/avatar/import?url=http://127.0.0.1:%s/latest/meta-data/iam/security-credentials/WAF-Admin-Role">4. Attack Cloud Metadata (Secure)</a></p>
 				</div>
 			</body>
 			</html>
-		`, port, port) // Injects the port variable into the %s placeholders
-
+		`, port, port, port, port)
 		fmt.Fprint(w, html)
 	})
 
-	http.HandleFunc("/proxy", fetchProfilePicture)
+	// Register Routes
+	http.HandleFunc("/api/v1/avatar/import", fetchProfilePicture)
+	http.HandleFunc("/api/v2/avatar/import", fetchProfilePictureFixed)
 
 	fmt.Println("Server running on port " + port)
 	http.ListenAndServe(":"+port, nil)
