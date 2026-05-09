@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 )
 
 // --- VULNERABLE HANDLER ---
@@ -25,7 +26,7 @@ func fetchProfilePicture(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// --- SECURE HANDLER: NETWORK DENYLISTING ---
+// --- SECURE HANDLER: NETWORK DENYLISTING & DNS REBINDING PREVENTION ---
 func fetchProfilePictureFixed(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.Query().Get("url")
 
@@ -36,8 +37,17 @@ func fetchProfilePictureFixed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Resolve the Domain to an IP Address (Time of Check)
+	// 2. Block Obfuscated Decimal IPs
+	// Valid top-level domains (.com, .net) cannot be entirely numeric.
+	// If this parses perfectly as an integer, it is an obfuscated IP bypass attempt.
 	hostname := parsedURL.Hostname()
+	if _, err := strconv.ParseInt(hostname, 10, 64); err == nil {
+		errorMessage := fmt.Sprintf("SSRF Blocked: Obfuscated decimal IP detected (%s).", hostname)
+		http.Error(w, errorMessage, http.StatusForbidden)
+		return
+	}
+
+	// 3. Resolve the Domain to an IP Address (Time of Check)
 	ips, err := net.LookupIP(hostname)
 	if err != nil || len(ips) == 0 {
 		http.Error(w, "Error: Could not resolve hostname.", http.StatusBadRequest)
@@ -47,14 +57,17 @@ func fetchProfilePictureFixed(w http.ResponseWriter, r *http.Request) {
 	// We take the first resolved IP for our check and our connection
 	resolvedIP := ips[0]
 
-	// 3. The Denylist Check
-	if resolvedIP.IsLoopback() || resolvedIP.IsPrivate() || resolvedIP.IsLinkLocalUnicast() || resolvedIP.IsUnspecified() {
+	// 4. The Denylist Check
+	// IsLoopback blocks 127.0.0.1 (Localhost)
+	// IsPrivate blocks 10.x.x.x, 172.16.x.x, 192.168.x.x (Internal Networks)
+	// IsLocalUnicast blocks 169.254.x.x (Link-Local, including AWS Metadata)
+	if resolvedIP.IsLoopback() || resolvedIP.IsPrivate() || resolvedIP.IsLinkLocalUnicast() {
 		errorMessage := fmt.Sprintf("SSRF Blocked: The IP address (%s) belongs to a restricted internal network.", resolvedIP.String())
 		http.Error(w, errorMessage, http.StatusForbidden)
 		return
 	}
 
-	// 4. FORBID DNS REBINDING: Create a custom HTTP Transport
+	// 5. PREVENT DNS REBINDING: Create a custom HTTP Transport
 	// We force the network dialer to use the exact IP we just validated,
 	// completely ignoring any subsequent DNS lookups. (Time of Use)
 	transport := &http.Transport{
@@ -78,12 +91,12 @@ func fetchProfilePictureFixed(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// 5. Create a custom HTTP client using our hardened transport
+	// 6. Create a custom HTTP client using our hardened transport
 	client := &http.Client{
 		Transport: transport,
 	}
 
-	// 6. Execute the request safely
+	// 7. Execute the request safely
 	req, err := http.NewRequestWithContext(r.Context(), "GET", targetURL, nil)
 	if err != nil {
 		http.Error(w, "Error building request.", http.StatusInternalServerError)

